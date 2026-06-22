@@ -36,7 +36,12 @@ GOLD_BG = "#F7EFD7"
 GOLD_TEXT = "#9A7B2E"
 
 # ----------------------------------------------------------------------------
-# Excel data layer (wishlist.xlsx) — two sheets: Wishlist + SupplierOptions
+# Data layer — two tables: Wishlist + SupplierOptions
+#
+# Storage backend is chosen automatically:
+#   * Google Sheets  — when a [gcp_service_account] secret is configured
+#                      (this is the shared, persistent store used in the cloud).
+#   * Local Excel    — otherwise (handy for local development).
 #
 # NOTE: This is a workflow-management / record-keeping tool. It does NOT scrape
 # supplier websites and does NOT auto-compare prices. Users enter all supplier
@@ -52,7 +57,73 @@ OPT_COLUMNS = ["Component ID", "Supplier", "Supplier Type", "Price", "Stock",
 TRUSTED_SUPPLIERS = ["RS Components", "Communica", "Mantech", "Mintech", "Other"]
 
 
+# ---- Backend selection -----------------------------------------------------
+def _use_gsheets() -> bool:
+    try:
+        return "gcp_service_account" in st.secrets
+    except Exception:
+        return False
+
+
+@st.cache_resource(show_spinner=False)
+def _get_worksheets():
+    """Open (and lazily create) the two worksheets in the shared spreadsheet."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=scopes
+    )
+    gc = gspread.authorize(creds)
+
+    key = st.secrets.get("spreadsheet_key", "")
+    url = st.secrets.get("spreadsheet_url", "")
+    sh = gc.open_by_key(key) if key else gc.open_by_url(url)
+
+    def ws_or_create(title, headers):
+        try:
+            ws = sh.worksheet(title)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title, rows=200, cols=len(headers))
+        if ws.row_values(1) != headers:
+            if not ws.row_values(1):
+                ws.append_row(headers)
+        return ws
+
+    return ws_or_create("Wishlist", WL_COLUMNS), ws_or_create("SupplierOptions", OPT_COLUMNS)
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def _gs_records(title: str):
+    wl_ws, opt_ws = _get_worksheets()
+    ws = wl_ws if title == "Wishlist" else opt_ws
+    return ws.get_all_records()
+
+
+def _refresh():
+    """Drop cached reads so the next load hits the live sheet."""
+    try:
+        _gs_records.clear()
+    except Exception:
+        pass
+
+
+def _frame(records, columns) -> pd.DataFrame:
+    df = pd.DataFrame(records)
+    for col in columns:
+        if col not in df.columns:
+            df[col] = ""
+    return df[columns] if not df.empty else pd.DataFrame(columns=columns)
+
+
+# ---- Loads -----------------------------------------------------------------
 def load_wishlist() -> pd.DataFrame:
+    if _use_gsheets():
+        return _frame(_gs_records("Wishlist"), WL_COLUMNS)
     if EXCEL_FILE.exists():
         xls = pd.ExcelFile(EXCEL_FILE)
         sheet = "Wishlist" if "Wishlist" in xls.sheet_names else xls.sheet_names[0]
@@ -67,6 +138,8 @@ def load_wishlist() -> pd.DataFrame:
 
 
 def load_options() -> pd.DataFrame:
+    if _use_gsheets():
+        return _frame(_gs_records("SupplierOptions"), OPT_COLUMNS)
     if EXCEL_FILE.exists():
         xls = pd.ExcelFile(EXCEL_FILE)
         if "SupplierOptions" in xls.sheet_names:
@@ -79,13 +152,23 @@ def load_options() -> pd.DataFrame:
 
 
 def write_workbook(wishlist_df: pd.DataFrame, options_df: pd.DataFrame) -> None:
-    """Write both sheets together so neither clobbers the other."""
+    """Write both sheets together so neither clobbers the other (Excel only)."""
     with pd.ExcelWriter(EXCEL_FILE, engine="openpyxl") as writer:
         wishlist_df.to_excel(writer, sheet_name="Wishlist", index=False)
         options_df.to_excel(writer, sheet_name="SupplierOptions", index=False)
 
 
+# ---- Writes ----------------------------------------------------------------
 def add_component(component, model, specs, qty) -> None:
+    if _use_gsheets():
+        wl_ws, _ = _get_worksheets()
+        next_num = len(wl_ws.get_all_records()) + 1
+        wl_ws.append_row([
+            next_num, component, model, specs, int(qty),
+            datetime.now().strftime("%Y-%m-%d"), "Pending", "",
+        ], value_input_option="USER_ENTERED")
+        _refresh()
+        return
     wl = load_wishlist()
     opts = load_options()
     new_row = {
@@ -104,6 +187,14 @@ def add_component(component, model, specs, qty) -> None:
 
 def add_option(component_id, supplier, supplier_type, price, stock, eta, cart, url):
     """Record a manually-entered supplier option for a component."""
+    if _use_gsheets():
+        _, opt_ws = _get_worksheets()
+        opt_ws.append_row([
+            component_id, supplier, supplier_type, price, stock, eta,
+            cart, url, "FALSE",
+        ], value_input_option="USER_ENTERED")
+        _refresh()
+        return
     wl = load_wishlist()
     opts = load_options()
     new_row = {
@@ -122,7 +213,21 @@ def add_option(component_id, supplier, supplier_type, price, stock, eta, cart, u
 
 
 def select_option(component_id, row_index) -> None:
-    """Mark one option as the chosen supplier (only one per component)."""
+    """Mark one option as the chosen supplier (only one per component).
+
+    `row_index` is the 0-based position within the full options list, which
+    matches the spreadsheet row order (sheet row = row_index + 2, after header).
+    """
+    if _use_gsheets():
+        _, opt_ws = _get_worksheets()
+        records = opt_ws.get_all_records()
+        sel_col = OPT_COLUMNS.index("Selected") + 1
+        for i, rec in enumerate(records):
+            if str(rec.get("Component ID")) == str(component_id):
+                opt_ws.update_cell(i + 2, sel_col,
+                                   "TRUE" if i == row_index else "FALSE")
+        _refresh()
+        return
     wl = load_wishlist()
     opts = load_options()
     mask = opts["Component ID"].astype(str) == str(component_id)
@@ -133,6 +238,23 @@ def select_option(component_id, row_index) -> None:
 
 def confirm_source(component_id) -> str:
     """Lock the sourcing decision: Pending -> Sourced, store chosen supplier."""
+    if _use_gsheets():
+        wl_ws, opt_ws = _get_worksheets()
+        chosen = [r for r in opt_ws.get_all_records()
+                  if str(r.get("Component ID")) == str(component_id)
+                  and is_true(r.get("Selected"))]
+        if not chosen:
+            return ""
+        supplier = str(chosen[0]["Supplier"])
+        status_col = WL_COLUMNS.index("Status") + 1
+        supp_col = WL_COLUMNS.index("Selected Supplier") + 1
+        for i, rec in enumerate(wl_ws.get_all_records()):
+            if str(rec.get("#")) == str(component_id):
+                wl_ws.update_cell(i + 2, status_col, "Sourced")
+                wl_ws.update_cell(i + 2, supp_col, supplier)
+                break
+        _refresh()
+        return supplier
     wl = load_wishlist()
     opts = load_options()
     chosen = opts[(opts["Component ID"].astype(str) == str(component_id))

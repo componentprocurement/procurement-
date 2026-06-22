@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Never commit real credentials
+.streamlit/secrets.toml
