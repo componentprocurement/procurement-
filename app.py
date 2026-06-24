@@ -709,10 +709,13 @@ st.markdown(
         }}
 
         /* Cards: only wrappers that contain our hidden .card-marker.
-           (Streamlit wraps every column in this testid, so we must scope it.) */
-        [data-testid="stVerticalBlockBorderWrapper"]:has(
-            > div > [data-testid="stVerticalBlock"]
-            > [data-testid="element-container"] .card-marker) {{
+           (Streamlit wraps every column in this testid, so we must scope it.)
+           Selector list covers DOM testid renames across Streamlit versions:
+           element-container -> stElementContainer (newer). */
+        [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"] > [data-testid="element-container"] .card-marker),
+        [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] .card-marker),
+        [data-testid="stVerticalBlockBorderWrapper"]:has(> [data-testid="stVerticalBlock"] > [data-testid="element-container"] .card-marker),
+        [data-testid="stVerticalBlockBorderWrapper"]:has(> [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] .card-marker) {{
             background-color: {CARD_BG} !important;
             border: 1px solid {BORDER} !important;
             border-radius: 18px !important;
@@ -722,8 +725,10 @@ st.markdown(
         }}
         .card-marker {{ display: none; }}
 
-        /* Red "Delete" button — scoped to the column holding .del-marker */
-        [data-testid="column"]:has(.del-marker) button {{
+        /* Red "Delete" button — scoped to the column holding .del-marker.
+           Covers column -> stColumn testid rename across Streamlit versions. */
+        [data-testid="column"]:has(.del-marker) button,
+        [data-testid="stColumn"]:has(.del-marker) button {{
             background: #F7E0E0 !important;
             border: 1px solid #F0C9C9 !important;
             border-radius: 10px !important;
@@ -732,13 +737,15 @@ st.markdown(
             padding: 4px 8px !important;
             white-space: nowrap !important;
         }}
-        [data-testid="column"]:has(.del-marker) button p {{
+        [data-testid="column"]:has(.del-marker) button p,
+        [data-testid="stColumn"]:has(.del-marker) button p {{
             color: #C94B4B !important;
             font-weight: 600 !important;
             font-size: 14px !important;
             white-space: nowrap !important;
         }}
-        [data-testid="column"]:has(.del-marker) button:hover {{
+        [data-testid="column"]:has(.del-marker) button:hover,
+        [data-testid="stColumn"]:has(.del-marker) button:hover {{
             background: #F2C9C9 !important;
             border-color: #C94B4B !important;
         }}
