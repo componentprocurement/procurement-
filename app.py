@@ -537,6 +537,8 @@ st.markdown(
             text-transform: uppercase;
             margin: 0 0 14px 0;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }}
 
         .sidebar-divider {{
@@ -555,6 +557,11 @@ st.markdown(
             align-items: center;
             gap: 12px;
             margin: 34px 6px 6px 6px;
+            overflow: hidden;            /* keep contents inside the card */
+        }}
+        .admin-card > div:last-child {{
+            flex: 1;                     /* take remaining space */
+            min-width: 0;                /* allow shrinking below content */
         }}
         .admin-avatar {{
             width: 44px;
@@ -577,6 +584,9 @@ st.markdown(
         .admin-email {{
             font-size: 13px;
             color: {MUTED_TEXT};
+            display: block;
+            white-space: normal;         /* allow wrapping */
+            word-break: break-word;      /* wrap long addresses if needed */
         }}
 
         /* -------------------------------------------------------------- */
