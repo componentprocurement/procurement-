@@ -40,7 +40,7 @@ GOLD_TEXT = "#9A7B2E"
 # Bump this whenever code changes, so the deployed build is identifiable at a
 # glance (shown in the sidebar). If the cloud shows an older value than this,
 # it has NOT redeployed the latest commit yet.
-APP_VERSION = "build 2026-06-25 #11 (compact-sidebar)"
+APP_VERSION = "build 2026-06-25 #12 (nav-center-email)"
 
 # ----------------------------------------------------------------------------
 # Data layer — two tables: Wishlist + SupplierOptions
@@ -603,8 +603,9 @@ st.markdown(
             font-size: 13px;
             color: {MUTED_TEXT};
             display: block;
-            white-space: normal;         /* allow wrapping */
-            word-break: break-word;      /* wrap long addresses if needed */
+            white-space: nowrap;         /* keep on one line */
+            overflow: hidden;
+            text-overflow: ellipsis;     /* '…' only if it truly can't fit */
         }}
 
         /* -------------------------------------------------------------- */
@@ -613,8 +614,8 @@ st.markdown(
         /* -------------------------------------------------------------- */
         section[data-testid="stSidebar"] .stButton > button {{
             width: 100%;
-            text-align: left;
-            justify-content: flex-start;
+            text-align: center;
+            justify-content: center;
             background-color: transparent;   /* same as sidebar bg */
             color: {TEXT};
             border: none;
