@@ -40,7 +40,7 @@ GOLD_TEXT = "#9A7B2E"
 # Bump this whenever code changes, so the deployed build is identifiable at a
 # glance (shown in the sidebar). If the cloud shows an older value than this,
 # it has NOT redeployed the latest commit yet.
-APP_VERSION = "build 2026-06-25 #13 (email-fits)"
+APP_VERSION = "build 2026-06-25 #14 (nav-left-no-icons)"
 
 # ----------------------------------------------------------------------------
 # Data layer — two tables: Wishlist + SupplierOptions
@@ -613,8 +613,9 @@ st.markdown(
         /* -------------------------------------------------------------- */
         section[data-testid="stSidebar"] .stButton > button {{
             width: 100%;
-            text-align: center;
-            justify-content: center;
+            text-align: left;
+            justify-content: flex-start;
+            padding-left: 20px;
             background-color: transparent;   /* same as sidebar bg */
             color: {TEXT};
             border: none;
@@ -1391,7 +1392,7 @@ with st.sidebar:
     for name, icon in PAGES:
         is_active = st.session_state.active_page == name
         st.button(
-            f"{icon}    {name}",
+            name,
             key=f"nav_{name}",
             use_container_width=True,
             type="primary" if is_active else "secondary",
