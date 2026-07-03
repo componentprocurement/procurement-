@@ -1,9 +1,11 @@
 import base64
+import io
 import json
 import os
 import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -40,7 +42,7 @@ GOLD_TEXT = "#9A7B2E"
 # Bump this whenever code changes, so the deployed build is identifiable at a
 # glance (shown in the sidebar). If the cloud shows an older value than this,
 # it has NOT redeployed the latest commit yet.
-APP_VERSION = "build 2026-06-25 #15 (compact-main)"
+APP_VERSION = "build 2026-06-25 #16 (procurement-outputs)"
 
 # ----------------------------------------------------------------------------
 # Data layer — two tables: Wishlist + SupplierOptions
@@ -1377,6 +1379,218 @@ def render_sourcing() -> None:
 
 
 # ----------------------------------------------------------------------------
+# Procurement Outputs page (step 3)
+# ----------------------------------------------------------------------------
+def _chosen_option(opts, comp_id):
+    sel = opts[(opts["Component ID"].astype(str) == str(comp_id))
+               & (opts["Selected"].apply(is_true))]
+    return sel.iloc[0] if not sel.empty else None
+
+
+def _missing_fields(comp, chosen):
+    """List the blank fields for a component (wishlist + chosen supplier)."""
+    missing = []
+    if not clean(comp["Model"]):
+        missing.append("Model")
+    if not clean(comp["Specifications"]):
+        missing.append("Specification")
+    if not clean(comp["Quantity"]):
+        missing.append("Quantity")
+    if clean(comp["Status"]).lower() != "sourced":
+        missing.append("Not sourced")
+    elif chosen is None:
+        missing.append("No supplier selected")
+    else:
+        if not clean(chosen["Price"]):
+            missing.append("Unit Price")
+        if not clean(chosen["Stock"]):
+            missing.append("Stock")
+        if not clean(chosen["ETA"]):
+            missing.append("ETA")
+    return missing
+
+
+def _table(headers, rows_html):
+    head = "".join(f'<th class="cmp-h">{h}</th>' for h in headers)
+    return (f'<table style="width:100%;border-collapse:collapse;">'
+            f'<thead><tr>{head}</tr></thead><tbody>{rows_html}</tbody></table>')
+
+
+def render_procurement():
+    st.markdown(
+        '<div class="page-title">Procurement Outputs</div>'
+        '<div class="page-subtitle">Review completeness, then route sourced '
+        'components to carts and order lists.</div>',
+        unsafe_allow_html=True,
+    )
+    wl = load_wishlist()
+    opts = load_options()
+    if wl.empty:
+        st.markdown(
+            '<div class="card"><div class="wl-empty">No components yet — add some '
+            'on the <b>Wishlist</b> page first.</div></div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    # ---- Completeness reminder (non-blocking) --------------------------
+    incomplete = []
+    for _, comp in wl.iterrows():
+        miss = _missing_fields(comp, _chosen_option(opts, comp["#"]))
+        if miss:
+            incomplete.append((comp, miss))
+
+    if incomplete:
+        rows = ""
+        for comp, miss in incomplete:
+            rows += (
+                "<tr>"
+                f'<td class="cmp-c cmp-strong">{clean(comp["Component"])}</td>'
+                f'<td class="cmp-c cmp-muted">{cmp_id(comp["#"])}</td>'
+                f'<td class="cmp-c" style="color:{GOLD_TEXT};">{", ".join(miss)}</td>'
+                "</tr>"
+            )
+        st.markdown(
+            f'<div class="card" style="background:#FEFBF2;border-color:#EAD9A6;">'
+            f'<div class="card-heading" style="color:{GOLD_TEXT};margin-bottom:6px;">'
+            f'⚠ Reminder — {len(incomplete)} item'
+            f'{"s" if len(incomplete) != 1 else ""} still have missing data</div>'
+            f'<div class="page-subtitle" style="margin-bottom:14px;">This is only a '
+            f'reminder — you can still continue and use the outputs below.</div>'
+            + _table(["COMPONENT", "ID", "MISSING FIELDS"], rows)
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="card"><div style="color:#3E7A63;font-weight:600;">'
+            '✓ All components have complete data.</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    # ---- Route sourced components into buckets -------------------------
+    buckets = {"Shopping Cart Queue": [], "Veronica Procurement List": [],
+               "Tan Procurement List": [], "Unresolved Components": []}
+    for _, comp in wl.iterrows():
+        chosen = _chosen_option(opts, comp["#"])
+        if clean(comp["Status"]).lower() == "sourced" and chosen is not None:
+            supplier = clean(chosen["Supplier"])
+            cart = clean(chosen["Shopping Cart Available"])
+            route = route_for(supplier, cart)
+        else:
+            supplier, cart, route = "", "", "Unresolved Components"
+        if route not in buckets:
+            route = "Unresolved Components"
+        buckets[route].append((comp, supplier, cart))
+
+    # ---- Shopping Cart Queue -------------------------------------------
+    cart_items = buckets["Shopping Cart Queue"]
+    rows = "".join(
+        "<tr>"
+        f'<td class="cmp-c cmp-strong">{clean(c["Component"])}</td>'
+        f'<td class="cmp-c">{sup}</td>'
+        f'<td class="cmp-c">{clean(c["Quantity"])}</td>'
+        f'<td class="cmp-c">{cart_badge("Yes")}</td>'
+        "</tr>"
+        for (c, sup, cart) in cart_items
+    ) or '<tr><td colspan="4"><div class="wl-empty">Nothing here yet.</div></td></tr>'
+    st.markdown(
+        f'<div class="card"><div class="card-heading">🛒 Shopping Cart Queue '
+        f'<span class="opt-count">({len(cart_items)})</span></div>'
+        + _table(["COMPONENT", "SUPPLIER", "QTY", "CART"], rows) + '</div>',
+        unsafe_allow_html=True,
+    )
+    lect = st.text_input("Lecturer email", placeholder="lecturer@wits.ac.za",
+                         key="lect_email")
+    if cart_items:
+        body = "Shopping cart for procurement:\n\n" + "\n".join(
+            f'- {clean(c["Component"])} (qty {clean(c["Quantity"])}) — {sup}'
+            for (c, sup, cart) in cart_items)
+        mailto = (f'mailto:{quote(lect or "")}?subject='
+                  f'{quote("Procurement shopping cart")}&body={quote(body)}')
+        st.markdown(
+            f'<a href="{mailto}" target="_blank" style="display:inline-block;'
+            f'background:{PRIMARY_BLUE};color:#fff;padding:9px 20px;border-radius:10px;'
+            f'font-size:14px;font-weight:600;text-decoration:none;">'
+            f'✉ Email Cart to Lecturer</a>',
+            unsafe_allow_html=True,
+        )
+
+    # ---- Manual Order Lists (per buyer) --------------------------------
+    st.markdown('<div class="card-heading" style="margin-top:6px;">📋 Manual Order '
+                'Lists</div>', unsafe_allow_html=True)
+    for route_name, subtitle in [
+        ("Veronica Procurement List", "RS Components"),
+        ("Tan Procurement List", "Communica · Mintech · Mantech"),
+    ]:
+        items = buckets[route_name]
+        rows = "".join(
+            "<tr>"
+            f'<td class="cmp-c cmp-strong">{clean(c["Component"])}</td>'
+            f'<td class="cmp-c">{sup}</td>'
+            f'<td class="cmp-c">{clean(c["Quantity"])}</td>'
+            "</tr>"
+            for (c, sup, cart) in items
+        ) or '<tr><td colspan="3"><div class="wl-empty">Nothing here yet.</div></td></tr>'
+        st.markdown(
+            f'<div class="card"><div class="card-heading" style="margin-bottom:2px;">'
+            f'{route_name} <span class="opt-count">({len(items)})</span></div>'
+            f'<div class="opt-sub">{subtitle}</div>'
+            + _table(["COMPONENT", "SUPPLIER", "QTY"], rows) + '</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ---- Unresolved ----------------------------------------------------
+    unresolved = buckets["Unresolved Components"]
+    rows = "".join(
+        "<tr>"
+        f'<td class="cmp-c cmp-strong">{clean(c["Component"])}</td>'
+        f'<td class="cmp-c cmp-muted">{cmp_id(c["#"])}</td>'
+        f'<td class="cmp-c cmp-muted">'
+        f'{"Not sourced" if clean(c["Status"]).lower() != "sourced" else "No route"}</td>'
+        "</tr>"
+        for (c, sup, cart) in unresolved
+    ) or '<tr><td colspan="3"><div class="wl-empty">Nothing here yet.</div></td></tr>'
+    st.markdown(
+        f'<div class="card"><div class="card-heading">❓ Unresolved Components '
+        f'<span class="opt-count">({len(unresolved)})</span></div>'
+        + _table(["COMPONENT", "ID", "REASON"], rows) + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ---- Export to Excel ----------------------------------------------
+    summary = []
+    for _, comp in wl.iterrows():
+        chosen = _chosen_option(opts, comp["#"])
+        sup = clean(chosen["Supplier"]) if chosen is not None else ""
+        cart = clean(chosen["Shopping Cart Available"]) if chosen is not None else ""
+        sourced = clean(comp["Status"]).lower() == "sourced"
+        route = route_for(sup, cart) if (sourced and chosen is not None) \
+            else "Unresolved Components"
+        summary.append({
+            "ID": cmp_id(comp["#"]),
+            "Component": clean(comp["Component"]),
+            "Model": clean(comp["Model"]),
+            "Specification": clean(comp["Specifications"]),
+            "Quantity": clean(comp["Quantity"]),
+            "Status": clean(comp["Status"]),
+            "Supplier": sup,
+            "Unit Price": clean(chosen["Price"]) if chosen is not None else "",
+            "Cart Available": cart,
+            "Route": route,
+            "Missing": ", ".join(_missing_fields(comp, chosen)),
+        })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        pd.DataFrame(summary).to_excel(writer, sheet_name="Procurement Outputs",
+                                       index=False)
+    st.download_button("⬇  Export to Excel", data=buf.getvalue(),
+                       file_name="procurement_outputs.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument."
+                            "spreadsheetml.sheet")
+
+
+# ----------------------------------------------------------------------------
 # Layout: native sidebar + top-level main content
 # ----------------------------------------------------------------------------
 with st.sidebar:
@@ -1458,6 +1672,8 @@ if page == "Wishlist":
     render_wishlist()
 elif page == "Sourcing":
     render_sourcing()
+elif page == "Procurement Outputs":
+    render_procurement()
 else:
     title, subtitle, body = PAGE_CONTENT[page]
     st.markdown(
