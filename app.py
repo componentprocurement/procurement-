@@ -1386,85 +1386,67 @@ def render_sourcing() -> None:
                     st.session_state.sourcing_idx = min(idx + 1, n - 1)
                     st.rerun()
 
-        # Two sourcing-entry cards (side by side; inner fields stack)
-        left, right = st.columns(2, gap="large")
-
-        with left:
-            with card():
-                st.markdown(
-                    '<div class="src-card-title">Trusted Supplier</div>'
-                    '<div class="src-card-sub">Pre-approved local vendors</div>',
-                    unsafe_allow_html=True,
-                )
-                t_on = st.toggle("Enable trusted supplier entry", value=True,
-                                 key="t_on")
+        # Single sourcing-entry card (choose type; URL always available)
+        with card():
+            st.markdown(
+                '<div class="src-card-title">Add Supplier</div>'
+                '<div class="src-card-sub">Record where this component will be '
+                'bought. You check stock &amp; price on the vendor site yourself '
+                '— no price comparison is done here.</div>',
+                unsafe_allow_html=True,
+            )
+            s_type = st.radio(
+                "Source type",
+                ["Trusted supplier", "Found via search"],
+                horizontal=True, key="s_type",
+            )
+            if s_type == "Trusted supplier":
                 supplier = st.selectbox("Supplier", TRUSTED_SUPPLIERS,
-                                        disabled=not t_on, key="t_supplier")
-                t_stock = st.text_input("Stock", placeholder="1,240",
-                                        disabled=not t_on, key="t_stock")
-                t_eta = st.text_input("ETA", placeholder="3–5 days",
-                                      disabled=not t_on, key="t_eta")
-                t_price = st.text_input("Unit Price", placeholder="R 4.20",
-                                        disabled=not t_on, key="t_price")
-                t_cart = st.toggle("Shopping Cart Available", value=True,
-                                   disabled=not t_on, key="t_cart")
-                if st.button("+  Add to comparison", key="t_add",
-                             disabled=not t_on, use_container_width=True):
-                    if not clean(t_stock) and not clean(t_price):
-                        st.warning("Enter at least the stock or unit price.")
-                    else:
-                        add_option(comp_id, supplier, "Trusted", t_price, t_stock,
-                                   t_eta, "Yes" if t_cart else "No", "")
-                        st.rerun()
+                                        key="s_supplier")
+                supplier_type = "Trusted"
+            else:
+                supplier = st.text_input("Vendor", placeholder="e.g. DigiKey",
+                                         key="s_vendor")
+                supplier_type = "External"
 
-        with right:
-            with card():
-                st.markdown(
-                    '<div class="src-card-title">URL Search</div>'
-                    '<div class="src-card-sub">Manually record details from any '
-                    'vendor page</div>',
-                    unsafe_allow_html=True,
-                )
-                u_on = st.toggle("Enable URL search entry", value=False, key="u_on")
-                u_url = st.text_input("Product URL",
-                                      placeholder="https://www.digikey.com/...",
-                                      disabled=not u_on, key="u_url")
-                u_vendor = st.text_input("Vendor", placeholder="e.g. DigiKey",
-                                         disabled=not u_on, key="u_vendor")
-                u_price = st.text_input("Price", placeholder="R 2.90",
-                                        disabled=not u_on, key="u_price")
-                u_stock = st.text_input("Stock", placeholder="9,800",
-                                        disabled=not u_on, key="u_stock")
-                u_eta = st.text_input("ETA", placeholder="7–10 days",
-                                      disabled=not u_on, key="u_eta")
-                u_cart = st.toggle("Shopping Cart Available", value=False,
-                                   disabled=not u_on, key="u_cart")
-                if st.button("+  Add to comparison", key="u_add",
-                             disabled=not u_on, use_container_width=True):
-                    if not clean(u_vendor):
-                        st.warning("Enter a vendor name.")
-                    else:
-                        add_option(comp_id, u_vendor, "External", u_price, u_stock,
-                                   u_eta, "Yes" if u_cart else "No", u_url)
-                        st.rerun()
+            s_url = st.text_input("Product URL (optional)",
+                                  placeholder="https://www.digikey.com/...",
+                                  key="s_url")
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                s_stock = st.text_input("Stock", placeholder="1,240", key="s_stock")
+            with f2:
+                s_eta = st.text_input("ETA", placeholder="3–5 days", key="s_eta")
+            with f3:
+                s_price = st.text_input("Unit Price", placeholder="R 4.20",
+                                        key="s_price")
+            s_cart = st.toggle("Shopping Cart Available", value=True, key="s_cart")
+            if st.button("+  Add option", key="s_add", use_container_width=True):
+                if not clean(supplier):
+                    st.warning("Choose a supplier or enter a vendor name.")
+                else:
+                    add_option(comp_id, supplier, supplier_type, s_price, s_stock,
+                               s_eta, "Yes" if s_cart else "No", s_url)
+                    st.rerun()
 
         # Supplier options table
         with card():
             st.markdown(
                 f'<div class="opt-head">'
-                f'<span class="card-heading" style="margin:0;">Supplier Options for '
+                f'<span class="card-heading" style="margin:0;">Recorded options for '
                 f'<span style="color:{PRIMARY_BLUE};">{clean(comp["Component"])}</span></span>'
                 f'<span class="opt-count">{len(comp_opts)} option'
-                f'{"s" if len(comp_opts) != 1 else ""} found</span></div>'
-                f'<div class="opt-sub">{cmp_id(comp["#"])} &nbsp;·&nbsp; '
-                f'{clean(comp["Model"])}</div>',
+                f'{"s" if len(comp_opts) != 1 else ""}</span></div>'
+                f'<div class="opt-sub">Select the one you\'ll use — add another as a '
+                f'backup for no-stock / issues. &nbsp;·&nbsp; {cmp_id(comp["#"])} '
+                f'&nbsp;·&nbsp; {clean(comp["Model"])}</div>',
                 unsafe_allow_html=True,
             )
 
             if comp_opts.empty:
                 st.markdown(
-                    '<div class="wl-empty">No supplier options recorded yet — add one '
-                    'using the cards above.</div>',
+                    '<div class="wl-empty">No options recorded yet — add one '
+                    'using the card above.</div>',
                     unsafe_allow_html=True,
                 )
             else:
