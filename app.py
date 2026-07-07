@@ -1187,7 +1187,7 @@ def render_wishlist() -> None:
                 unsafe_allow_html=True,
             )
         else:
-            widths = [2.0, 1.1, 2.0, 0.6, 1.3, 1.1, 0.95, 0.95]
+            widths = [1.9, 1.0, 1.8, 0.6, 1.25, 1.0, 1.2, 1.2]
             heads = ["COMPONENT", "MODEL", "SPECIFICATION", "QTY",
                      "DATE ADDED", "STATUS", "", ""]
             hc = st.columns(widths)
@@ -1226,11 +1226,17 @@ def render_wishlist() -> None:
                 with row[7]:
                     try:
                         cont = st.container(key=f"delcell_{r['#']}")
+                        need_marker = False
                     except TypeError:
                         cont = st.container()
+                        need_marker = True
                     with cont:
-                        st.markdown('<span class="del-marker"></span>',
-                                    unsafe_allow_html=True)
+                        # marker only needed as the old-Streamlit CSS fallback;
+                        # skipping it on modern Streamlit keeps Delete aligned
+                        # with Edit (no extra element pushing the button down)
+                        if need_marker:
+                            st.markdown('<span class="del-marker"></span>',
+                                        unsafe_allow_html=True)
                         if st.button("Delete", key=f"wl_del_{r['#']}",
                                      use_container_width=True):
                             st.session_state.wl_pending_delete = r["#"]
