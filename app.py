@@ -1236,15 +1236,20 @@ def render_wishlist() -> None:
                             st.session_state.wl_pending_delete = r["#"]
                             st.rerun()
 
-    # ---- Download -------------------------------------------------------
-    if EXCEL_FILE.exists():
-        with open(EXCEL_FILE, "rb") as f:
-            st.download_button(
-                "⬇  Download wishlist (.xlsx)",
-                data=f,
-                file_name="wishlist.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+    # ---- Download a snapshot of the LIVE data (Google Sheets or Excel) --
+    if count:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            load_wishlist().to_excel(writer, sheet_name="Wishlist", index=False)
+            load_options().to_excel(writer, sheet_name="SupplierOptions", index=False)
+        st.download_button(
+            "⬇  Download a snapshot (.xlsx)",
+            data=buf.getvalue(),
+            file_name="wishlist.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="A one-off copy of the current data. The live data lives in "
+                 "Google Sheets when shared storage is on.",
+        )
 
 
 # ----------------------------------------------------------------------------
