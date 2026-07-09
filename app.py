@@ -147,7 +147,7 @@ def _get_worksheets():
     return ws_or_create("Wishlist", WL_COLUMNS), ws_or_create("SupplierOptions", OPT_COLUMNS)
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def _gs_records(title: str):
     wl_ws, opt_ws = _get_worksheets()
     ws = wl_ws if title == "Wishlist" else opt_ws
@@ -298,13 +298,15 @@ def select_option(component_id, row_index) -> None:
     matches the spreadsheet row order (sheet row = row_index + 2, after header).
     """
     if _use_gsheets():
+        import gspread
         _, opt_ws = _get_worksheets()
         records = opt_ws.get_all_records()
         sel_col = OPT_COLUMNS.index("Selected") + 1
-        for i, rec in enumerate(records):
-            if str(rec.get("Component ID")) == str(component_id):
-                opt_ws.update_cell(i + 2, sel_col,
-                                   "TRUE" if i == row_index else "FALSE")
+        cells = [gspread.Cell(i + 2, sel_col, "TRUE" if i == row_index else "FALSE")
+                 for i, rec in enumerate(records)
+                 if str(rec.get("Component ID")) == str(component_id)]
+        if cells:
+            opt_ws.update_cells(cells)   # one API call instead of one per row
         _refresh()
         return
     wl = load_wishlist()
@@ -318,6 +320,7 @@ def select_option(component_id, row_index) -> None:
 def confirm_source(component_id) -> str:
     """Lock the sourcing decision: Pending -> Sourced, store chosen supplier."""
     if _use_gsheets():
+        import gspread
         wl_ws, opt_ws = _get_worksheets()
         chosen = [r for r in opt_ws.get_all_records()
                   if str(r.get("Component ID")) == str(component_id)
@@ -329,8 +332,8 @@ def confirm_source(component_id) -> str:
         supp_col = WL_COLUMNS.index("Selected Supplier") + 1
         for i, rec in enumerate(wl_ws.get_all_records()):
             if str(rec.get("#")) == str(component_id):
-                wl_ws.update_cell(i + 2, status_col, "Sourced")
-                wl_ws.update_cell(i + 2, supp_col, supplier)
+                wl_ws.update_cells([gspread.Cell(i + 2, status_col, "Sourced"),
+                                    gspread.Cell(i + 2, supp_col, supplier)])
                 break
         _refresh()
         return supplier
@@ -1689,11 +1692,22 @@ def render_procurement():
             f'⚠ Reminder — {len(incomplete)} item'
             f'{"s" if len(incomplete) != 1 else ""} still have missing data</div>'
             f'<div class="page-subtitle" style="margin-bottom:14px;">This is only a '
-            f'reminder — you can still continue and use the outputs below.</div>'
+            f'reminder — fix them below, or continue and use the outputs.</div>'
             + _table(["COMPONENT", "ID", "MISSING FIELDS"], rows)
             + '</div>',
             unsafe_allow_html=True,
         )
+        fx1, fx2, _ = st.columns([1.4, 1.4, 2])
+        with fx1:
+            if st.button("✏  Edit on Wishlist", key="fix_wishlist",
+                         use_container_width=True):
+                st.session_state.active_page = "Wishlist"
+                st.rerun()
+        with fx2:
+            if st.button("🔍  Fix on Sourcing", key="fix_sourcing",
+                         use_container_width=True):
+                st.session_state.active_page = "Sourcing"
+                st.rerun()
     else:
         st.markdown(
             '<div class="card"><div style="color:#3E7A63;font-weight:600;">'
@@ -1955,6 +1969,121 @@ def render_procurement():
 
 
 # ----------------------------------------------------------------------------
+# Dashboard page
+# ----------------------------------------------------------------------------
+def render_dashboard():
+    wl = load_wishlist()
+    year = datetime.now().year
+    month = datetime.now().strftime("%B %Y")
+
+    components = len(wl)
+    models = len({clean(m).lower() for _, m in wl["Model"].items() if clean(m)}) \
+        if components else 0
+    total_qty = sum(_qty(q) for q in wl["Quantity"]) if components else 0
+    sourced = int(sum(clean(s).lower() == "sourced" for s in wl["Status"])) \
+        if components else 0
+    pending = components - sourced
+
+    st.markdown(
+        f'<div class="page-title">Procurement Dashboard</div>'
+        f'<div class="page-subtitle">School of Electrical &amp; Information '
+        f'Engineering — {month}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ---- Four metric cards --------------------------------------------
+    metrics = [("⚙", components, "Components"), ("▤", models, "Models"),
+               ("#", total_qty, "Total Quantity"), ("⏱", pending, "Pending Items")]
+    cards = ""
+    for icon, value, label in metrics:
+        cards += (
+            f'<div class="card" style="flex:1;margin-bottom:0;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div style="width:34px;height:34px;border-radius:9px;background:{INPUT_BG};'
+            f'display:flex;align-items:center;justify-content:center;font-size:16px;">{icon}</div>'
+            f'<span style="font-size:12px;color:{MUTED_TEXT};">{year}</span></div>'
+            f'<div style="font-size:30px;font-weight:800;color:{TEXT};margin-top:8px;">{value}</div>'
+            f'<div style="font-size:13px;color:{MUTED_TEXT};">{label}</div></div>')
+    st.markdown(f'<div style="display:flex;gap:14px;margin-bottom:16px;">{cards}</div>',
+                unsafe_allow_html=True)
+
+    # ---- Workflow progress --------------------------------------------
+    steps = [("Wishlist", "Components identified"),
+             ("Sourcing", "Suppliers assigned"),
+             ("Review", "Quotes compared"),
+             ("Procurement", "Orders placed"),
+             ("Received", "Delivery confirmed")]
+    if components == 0:
+        current = 1
+    elif sourced < components:
+        current = 2
+    else:
+        current = 3
+
+    steps_html = '<div style="display:flex;align-items:flex-start;">'
+    for i, (name, sub) in enumerate(steps):
+        num = i + 1
+        if num < current:
+            circle = (f'<div style="width:38px;height:38px;border-radius:50%;'
+                      f'background:{PRIMARY_BLUE};color:#fff;display:flex;'
+                      f'align-items:center;justify-content:center;font-weight:700;">✓</div>')
+            nm_col = TEXT
+        elif num == current:
+            circle = (f'<div style="width:38px;height:38px;border-radius:50%;'
+                      f'background:#fff;color:{PRIMARY_BLUE};border:2px solid {PRIMARY_BLUE};'
+                      f'display:flex;align-items:center;justify-content:center;'
+                      f'font-weight:700;">{num}</div>')
+            nm_col = TEXT
+        else:
+            circle = (f'<div style="width:38px;height:38px;border-radius:50%;'
+                      f'background:#fff;color:{MUTED_TEXT};border:2px solid {BORDER};'
+                      f'display:flex;align-items:center;justify-content:center;'
+                      f'font-weight:700;">{num}</div>')
+            nm_col = MUTED_TEXT
+        steps_html += (
+            f'<div style="flex:1;text-align:center;">'
+            f'<div style="display:flex;justify-content:center;">{circle}</div>'
+            f'<div style="font-weight:700;font-size:14px;color:{nm_col};margin-top:8px;">{name}</div>'
+            f'<div style="font-size:11px;color:{MUTED_TEXT};">{sub}</div></div>')
+        if i < len(steps) - 1:
+            line_col = PRIMARY_BLUE if num < current else BORDER
+            steps_html += (f'<div style="flex:0.5;height:2px;background:{line_col};'
+                           f'margin-top:18px;"></div>')
+    steps_html += '</div>'
+
+    st.markdown(
+        f'<div class="card">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'margin-bottom:20px;">'
+        f'<div class="card-heading" style="margin:0;">Workflow Progress</div>'
+        f'<span style="background:{INPUT_BG};color:{PRIMARY_BLUE};font-size:12px;'
+        f'font-weight:600;padding:4px 12px;border-radius:999px;">Active Cycle</span></div>'
+        + steps_html + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ---- Recent components --------------------------------------------
+    if components:
+        rows = "".join(
+            "<tr>"
+            f'<td class="cmp-c cmp-strong">{clean(r["Component"])}</td>'
+            f'<td class="cmp-c cmp-muted">{clean(r["Model"])}</td>'
+            f'<td class="cmp-c">{clean(r["Quantity"])}</td>'
+            f'<td class="cmp-c">{status_badge(r["Status"])}</td>'
+            "</tr>"
+            for _, r in wl.tail(5).iloc[::-1].iterrows()
+        )
+    else:
+        rows = ('<tr><td colspan="4"><div class="wl-empty">No components yet — '
+                'add some on the Wishlist page.</div></td></tr>')
+    st.markdown(
+        '<div class="card"><div class="card-heading">Recent Components</div>'
+        + _table(["COMPONENT", "MODEL", "QUANTITY", "STATUS"], rows) + '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ----------------------------------------------------------------------------
 # Layout: native sidebar + top-level main content
 # ----------------------------------------------------------------------------
 with st.sidebar:
@@ -2037,14 +2166,4 @@ elif page == "Sourcing":
 elif page == "Procurement Outputs":
     render_procurement()
 else:
-    title, subtitle, body = PAGE_CONTENT[page]
-    st.markdown(
-        f"""
-        <div class="page-title">{title}</div>
-        <div class="page-subtitle">{subtitle}</div>
-        <div class="card">
-            <div class="placeholder">{body}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    render_dashboard()
