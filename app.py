@@ -264,6 +264,34 @@ def add_component(component, model, specs, qty) -> None:
     write_workbook(wl, opts)
 
 
+def add_components_bulk(items) -> int:
+    """Add many components in ONE write. items: list of (comp, model, spec, qty).
+
+    Much faster than adding one at a time (a single Sheets API call).
+    """
+    date = datetime.now().strftime("%Y-%m-%d")
+    if _use_gsheets():
+        wl_ws, _ = _get_worksheets()
+        start = _next_id(wl_ws.get_all_records())
+        rows = [[start + i, c, m, s, int(q), date, "Pending", ""]
+                for i, (c, m, s, q) in enumerate(items)]
+        if rows:
+            wl_ws.append_rows(rows, value_input_option="USER_ENTERED")
+        _refresh()
+        return len(rows)
+    wl = load_wishlist()
+    opts = load_options()
+    start = _next_id(wl)
+    new_rows = [{
+        "#": start + i, "Component": c, "Model": m, "Specifications": s,
+        "Quantity": int(q), "Date Added": date, "Status": "Pending",
+        "Selected Supplier": "",
+    } for i, (c, m, s, q) in enumerate(items)]
+    wl = pd.concat([wl, pd.DataFrame(new_rows)], ignore_index=True)
+    write_workbook(wl, opts)
+    return len(new_rows)
+
+
 def add_option(component_id, supplier, supplier_type, price, stock, eta, cart, url):
     """Record a manually-entered supplier option for a component."""
     if _use_gsheets():
@@ -892,6 +920,16 @@ st.markdown(
         }}
         .card-marker {{ display: none; }}
 
+        /* Yellow reminder card (Procurement Outputs) */
+        [class*="st-key-reminder_card"] {{
+            background: #FEFBF2 !important;
+            border: 1px solid #EAD9A6 !important;
+            border-radius: 16px !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05) !important;
+            padding: 18px 20px !important;
+            margin-bottom: 16px !important;
+        }}
+
         /* Red "Delete" button — stable class (newer) OR .del-marker column
            (older). Both selectors listed so it works on any Streamlit version. */
         [class*="st-key-delcell"] button,
@@ -1157,6 +1195,39 @@ def render_wishlist() -> None:
                 add_component(component.strip(), model.strip(),
                               specs.strip(), qty)
                 st.success(f"“{component.strip()}” added to the wishlist.")
+
+    # ---- Bulk add (fast entry of many components at once) ---------------
+    with st.expander("➕  Add many at once (paste a list)"):
+        st.caption("One component per line: **Component, Model, Specification, "
+                   "Quantity** (only Component is required).")
+        with st.form("bulk_add_form", clear_on_submit=True):
+            bulk = st.text_area(
+                "Paste components", height=140,
+                placeholder=("LM358 Op-Amp, LM358N, Dual 3-32V DIP-8, 50\n"
+                             "10k Resistor, CF1/4W, 0.25W 5%, 200\n"
+                             "Arduino Mega, 2560 R3, 54 I/O, 10"))
+            if st.form_submit_button("Add all"):
+                items = []
+                for line in bulk.splitlines():
+                    if not line.strip():
+                        continue
+                    parts = [p.strip() for p in line.split(",")]
+                    comp = parts[0]
+                    if not comp:
+                        continue
+                    model = parts[1] if len(parts) > 1 else ""
+                    spec = parts[2] if len(parts) > 2 else ""
+                    try:
+                        qty = int(parts[3]) if len(parts) > 3 and parts[3] else 1
+                    except ValueError:
+                        qty = 1
+                    items.append((comp, model, spec, qty))
+                if items:
+                    n_added = add_components_bulk(items)
+                    st.success(f"Added {n_added} component(s).")
+                    st.rerun()
+                else:
+                    st.warning("Nothing to add — paste at least one line.")
 
     # show any delete confirmation message from the previous run
     if st.session_state.get("wl_msg"):
@@ -1686,28 +1757,31 @@ def render_procurement():
                 f'<td class="cmp-c" style="color:{GOLD_TEXT};">{", ".join(miss)}</td>'
                 "</tr>"
             )
-        st.markdown(
-            f'<div class="card" style="background:#FEFBF2;border-color:#EAD9A6;">'
-            f'<div class="card-heading" style="color:{GOLD_TEXT};margin-bottom:6px;">'
-            f'⚠ Reminder — {len(incomplete)} item'
-            f'{"s" if len(incomplete) != 1 else ""} still have missing data</div>'
-            f'<div class="page-subtitle" style="margin-bottom:14px;">This is only a '
-            f'reminder — fix them below, or continue and use the outputs.</div>'
-            + _table(["COMPONENT", "ID", "MISSING FIELDS"], rows)
-            + '</div>',
-            unsafe_allow_html=True,
-        )
-        fx1, fx2, _ = st.columns([1.4, 1.4, 2])
-        with fx1:
-            if st.button("✏  Edit on Wishlist", key="fix_wishlist",
-                         use_container_width=True):
-                st.session_state.active_page = "Wishlist"
-                st.rerun()
-        with fx2:
-            if st.button("🔍  Fix on Sourcing", key="fix_sourcing",
-                         use_container_width=True):
-                st.session_state.active_page = "Sourcing"
-                st.rerun()
+        try:
+            rc = st.container(key="reminder_card")
+        except TypeError:
+            rc = st.container()
+        with rc:
+            st.markdown(
+                f'<div class="card-heading" style="color:{GOLD_TEXT};margin-bottom:6px;">'
+                f'⚠ Reminder — {len(incomplete)} item'
+                f'{"s" if len(incomplete) != 1 else ""} still have missing data</div>'
+                f'<div class="page-subtitle" style="margin-bottom:14px;">This is only a '
+                f'reminder — fix it here, or continue and use the outputs below.</div>'
+                + _table(["COMPONENT", "ID", "MISSING FIELDS"], rows),
+                unsafe_allow_html=True,
+            )
+            fx1, fx2, _ = st.columns([1.5, 1.5, 2])
+            with fx1:
+                if st.button("✏  Edit on Wishlist", key="fix_wishlist",
+                             use_container_width=True):
+                    st.session_state.active_page = "Wishlist"
+                    st.rerun()
+            with fx2:
+                if st.button("🔍  Fix on Sourcing", key="fix_sourcing",
+                             use_container_width=True):
+                    st.session_state.active_page = "Sourcing"
+                    st.rerun()
     else:
         st.markdown(
             '<div class="card"><div style="color:#3E7A63;font-weight:600;">'
