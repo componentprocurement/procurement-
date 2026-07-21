@@ -436,11 +436,12 @@ ORDER_HEADERS = ["Component", "Model", "Specification", "Quantity",
                  "Unit Price", "Line Total", "URL"]
 
 
-def save_company_order_sheets(orders_by_company) -> list:
-    """Save each company's aggregated manual order to its own sheet/tab.
+def save_order_sheets(groups) -> list:
+    """Save per-company order tabs for one or more buckets.
 
-    orders_by_company: {company_name: [ {Component, Model, Spec, Qty, Price,
-    Total}, ... ]}. Returns the list of sheet/tab names written.
+    groups: list of (prefix, {company: [ {Component, Model, Spec, Qty, Price,
+    Total, URL}, ... ]}). Each company gets a tab "<prefix> - <company>".
+    Returns the list of sheet/tab names written.
     """
     def _rows(rows):
         return [ORDER_HEADERS] + [
@@ -451,27 +452,34 @@ def save_company_order_sheets(orders_by_company) -> list:
     saved = []
     if _use_gsheets():
         sh = _open_spreadsheet()
-        for company, rows in orders_by_company.items():
-            title = ("Order - " + (company or "Unknown"))[:99]
-            try:
-                ws = sh.worksheet(title)
-                ws.clear()
-            except Exception:
-                ws = sh.add_worksheet(title, rows=max(20, len(rows) + 5),
-                                      cols=len(ORDER_HEADERS))
-            ws.update(range_name="A1", values=_rows(rows))
-            saved.append(title)
+        for prefix, by_co in groups:
+            for company, rows in by_co.items():
+                title = (f"{prefix} - " + (company or "Unknown"))[:99]
+                try:
+                    ws = sh.worksheet(title)
+                    ws.clear()
+                except Exception:
+                    ws = sh.add_worksheet(title, rows=max(20, len(rows) + 5),
+                                          cols=len(ORDER_HEADERS))
+                ws.update(range_name="A1", values=_rows(rows))
+                saved.append(title)
         return saved
 
     # Local Excel fallback → one workbook with a sheet per company
-    out = EXCEL_FILE.parent / "manual_orders.xlsx"
+    out = EXCEL_FILE.parent / "orders.xlsx"
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        for company, rows in orders_by_company.items():
-            data = _rows(rows)
-            pd.DataFrame(data[1:], columns=data[0]).to_excel(
-                writer, sheet_name=("Order - " + (company or "Unknown"))[:31],
-                index=False)
-            saved.append("Order - " + (company or "Unknown"))
+        wrote = False
+        for prefix, by_co in groups:
+            for company, rows in by_co.items():
+                data = _rows(rows)
+                pd.DataFrame(data[1:], columns=data[0]).to_excel(
+                    writer, index=False,
+                    sheet_name=(f"{prefix} - " + (company or "Unknown"))[:31])
+                saved.append(f"{prefix} - " + (company or "Unknown"))
+                wrote = True
+        if not wrote:
+            pd.DataFrame(columns=ORDER_HEADERS).to_excel(
+                writer, index=False, sheet_name="Orders")
     return saved
 
 
@@ -1960,15 +1968,16 @@ def render_procurement():
                     unsafe_allow_html=True)
 
     # ---- Save per-company order sheets + email the lecturer ------------
-    if orders_by_company:
+    if cart_by_co or manual_by_co:
         if st.session_state.get("orders_saved_msg"):
             st.success(st.session_state.pop("orders_saved_msg"))
         sc1, sc2, _ = st.columns([1.4, 1.6, 2])
         with sc1:
             if st.button("💾  Save order sheets", key="save_orders",
                          type="primary", use_container_width=True):
-                saved = save_company_order_sheets(orders_by_company)
-                where = "Google Sheet" if _use_gsheets() else "manual_orders.xlsx"
+                saved = save_order_sheets([("Cart", cart_by_co),
+                                           ("Manual", manual_by_co)])
+                where = "Google Sheet" if _use_gsheets() else "orders.xlsx"
                 st.session_state.orders_saved_msg = (
                     f"Saved {len(saved)} company order sheet(s) to the {where}: "
                     + ", ".join(saved))
