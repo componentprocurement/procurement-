@@ -433,7 +433,7 @@ def update_component(component_id, component, model, specs, qty) -> None:
 
 
 ORDER_HEADERS = ["Component", "Model", "Specification", "Quantity",
-                 "Unit Price", "Line Total"]
+                 "Unit Price", "Line Total", "URL"]
 
 
 def save_company_order_sheets(orders_by_company) -> list:
@@ -445,7 +445,8 @@ def save_company_order_sheets(orders_by_company) -> list:
     def _rows(rows):
         return [ORDER_HEADERS] + [
             [r["Component"], r["Model"], r["Spec"], r["Qty"],
-             _money(r["Price"]), _money(r["Total"])] for r in rows]
+             _money(r["Price"]), _money(r["Total"]), r.get("URL", "")]
+            for r in rows]
 
     saved = []
     if _use_gsheets():
@@ -1725,6 +1726,70 @@ def _money(v) -> str:
     return f"R {v:,.2f}"
 
 
+def _group_by_company(items):
+    """Group sourced items by supplier company, aggregating identical
+    component+specification rows (summing quantity, keeping a URL).
+
+    items: list of (comp_row, supplier, chosen_option). Returns
+    {company: [ {Component, Model, Spec, Qty, Price, Total, URL} ]}.
+    """
+    by = {}
+    for (comp, sup, chosen) in items:
+        agg = by.setdefault(sup or "(no supplier)", {})
+        k = (clean(comp["Component"]).strip().lower(),
+             clean(comp["Specifications"]).strip().lower())
+        if k not in agg:
+            agg[k] = {"Component": clean(comp["Component"]),
+                      "Model": clean(comp["Model"]),
+                      "Spec": clean(comp["Specifications"]),
+                      "Qty": 0, "Price": _price(chosen["Price"]),
+                      "URL": clean(chosen["URL"])}
+        agg[k]["Qty"] += _qty(comp["Quantity"])
+        if not agg[k]["URL"] and clean(chosen["URL"]):
+            agg[k]["URL"] = clean(chosen["URL"])
+    out = {}
+    for sup, agg in by.items():
+        rows = []
+        for a in agg.values():
+            a["Total"] = a["Price"] * a["Qty"]
+            rows.append(a)
+        out[sup] = rows
+    return out
+
+
+def _link_cell(url):
+    url = clean(url)
+    if not url:
+        return '<td class="cmp-c cmp-muted">—</td>'
+    return (f'<td class="cmp-c"><a href="{url}" target="_blank" '
+            f'style="color:#5B7DB1;font-weight:600;">🔗 open</a></td>')
+
+
+def _company_tables_html(by_co):
+    """Render one sub-card table per company (with a URL/link column)."""
+    html = ""
+    for sup, rows in by_co.items():
+        sub_total = sum(a["Total"] for a in rows)
+        trows = "".join(
+            "<tr>"
+            f'<td class="cmp-c cmp-strong">{a["Component"]}</td>'
+            f'<td class="cmp-c cmp-muted">{a["Model"]}</td>'
+            f'<td class="cmp-c cmp-muted">{a["Spec"]}</td>'
+            f'<td class="cmp-c">{a["Qty"]}</td>'
+            f'<td class="cmp-c cmp-muted">{_money(a["Price"])}</td>'
+            f'<td class="cmp-c cmp-price">{_money(a["Total"])}</td>'
+            + _link_cell(a["URL"]) + "</tr>"
+            for a in rows
+        )
+        html += (
+            f'<div class="card"><div class="card-heading" style="margin-bottom:12px;">'
+            f'{sup} <span class="opt-count">{len(rows)} line'
+            f'{"s" if len(rows) != 1 else ""} · {_money(sub_total)}</span></div>'
+            + _table(["COMPONENT", "MODEL", "SPECIFICATION", "QTY", "UNIT PRICE",
+                      "TOTAL", "LINK"], trows) + '</div>')
+    return html
+
+
 def render_procurement():
     st.markdown(
         '<div class="page-title">Procurement Outputs</div>'
@@ -1841,89 +1906,58 @@ def render_procurement():
         unsafe_allow_html=True,
     )
 
-    # ---- Shopping Cart Queue -------------------------------------------
+    # Group both buckets by company (aggregated, with URL)
+    cart_by_co = _group_by_company(cart_items)
+    manual_by_co = _group_by_company(manual_items)
+    orders_by_company = manual_by_co   # used by Save/email below
+
     st.session_state.setdefault("lect_email", LECTURER_EMAIL)
     lect = st.text_input("Lecturer email", key="lect_email")
-    body = "Shopping cart for procurement:\n\n" + "\n".join(
-        f'- {clean(c["Component"])} ({clean(c["Model"])}) x{_qty(c["Quantity"])} '
-        f'from {sup} @ {_money(_price(ch["Price"]))}'
-        for (c, sup, ch) in cart_items)
-    mailto = (f'mailto:{quote(lect or "")}?subject={quote("Procurement shopping cart")}'
-              f'&body={quote(body)}')
-    email_btn = (
-        f'<a href="{mailto}" target="_blank" style="background:{PRIMARY_BLUE};'
+
+    def _email_body(title, by_co):
+        lines = []
+        for company, rows in by_co.items():
+            lines.append(f"== {company} ==")
+            for a in rows:
+                u = f"  {a['URL']}" if a["URL"] else ""
+                lines.append(f'- {a["Component"]} ({a["Model"]}) x{a["Qty"]} '
+                             f'@ {_money(a["Price"])}{u}')
+            lines.append("")
+        return f"{title}\n\n" + "\n".join(lines)
+
+    # ---- Shopping Cart Queue (grouped by company, with URL) ------------
+    cart_mailto = (
+        f'mailto:{quote(lect or "")}?subject={quote("Procurement shopping cart")}'
+        f'&body={quote(_email_body("Shopping cart to build online:", cart_by_co))}')
+    cart_email_btn = (
+        f'<a href="{cart_mailto}" target="_blank" style="background:{PRIMARY_BLUE};'
         f'color:#fff;padding:8px 16px;border-radius:10px;font-size:13px;'
         f'font-weight:600;text-decoration:none;white-space:nowrap;">'
-        f'✉ Email Cart to Lecturer</a>') if cart_items else ""
-    rows = "".join(
-        "<tr>"
-        f'<td class="cmp-c cmp-strong">{clean(c["Component"])}</td>'
-        f'<td class="cmp-c cmp-muted">{clean(c["Model"])}</td>'
-        f'<td class="cmp-c">{sup}</td>'
-        f'<td class="cmp-c">{_qty(c["Quantity"])}</td>'
-        f'<td class="cmp-c cmp-muted">{_money(_price(ch["Price"]))}</td>'
-        f'<td class="cmp-c cmp-price">{_money(_price(ch["Price"]) * _qty(c["Quantity"]))}</td>'
-        "</tr>"
-        for (c, sup, ch) in cart_items
-    ) or '<tr><td colspan="6"><div class="wl-empty">Nothing here yet.</div></td></tr>'
+        f'✉ Email Cart to Lecturer</a>') if cart_by_co else ""
     st.markdown(
-        f'<div class="card">'
-        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'margin:6px 0 12px 0;">'
         f'<div class="card-heading" style="margin:0;">🛒 Shopping Cart Queue '
-        f'<span class="opt-count">Components with online cart support</span></div>'
-        f'{email_btn}</div>'
-        + _table(["COMPONENT", "MODEL", "SUPPLIER", "QTY", "UNIT PRICE", "TOTAL"], rows)
-        + '</div>',
+        f'<span class="opt-count">grouped by company · click 🔗 to open</span></div>'
+        f'{cart_email_btn}</div>',
         unsafe_allow_html=True,
     )
+    if cart_by_co:
+        st.markdown(_company_tables_html(cart_by_co), unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="card"><div class="wl-empty">Nothing here yet.</div>'
+                    '</div>', unsafe_allow_html=True)
 
-    # ---- Manual Order List (grouped by supplier, aggregated) -----------
-    by_sup = {}
-    for (comp, sup, chosen) in manual_items:
-        by_sup.setdefault(sup, []).append((comp, chosen))
-
-    manual_html = ('<div class="card-heading" style="margin:6px 0 12px 0;">'
-                   '📄 Manual Order List</div>')
-    if not by_sup:
-        manual_html += ('<div class="card"><div class="wl-empty">Nothing here yet — '
-                        'no sourced components without an online cart.</div></div>')
-    orders_by_company = {}   # {company: [agg rows with Total]} for saving/emailing
-    for sup, items in by_sup.items():
-        # aggregate identical component + specification (sum quantities)
-        agg = {}
-        for comp, chosen in items:
-            k = (clean(comp["Component"]).strip().lower(),
-                 clean(comp["Specifications"]).strip().lower())
-            if k not in agg:
-                agg[k] = {"Component": clean(comp["Component"]),
-                          "Model": clean(comp["Model"]),
-                          "Spec": clean(comp["Specifications"]),
-                          "Qty": 0, "Price": _price(chosen["Price"])}
-            agg[k]["Qty"] += _qty(comp["Quantity"])
-        order_rows = []
-        for a in agg.values():
-            a["Total"] = a["Price"] * a["Qty"]
-            order_rows.append(a)
-        orders_by_company[sup] = order_rows
-        sub_total = sum(a["Total"] for a in order_rows)
-        rows = "".join(
-            "<tr>"
-            f'<td class="cmp-c cmp-strong">{a["Component"]}</td>'
-            f'<td class="cmp-c cmp-muted">{a["Model"]}</td>'
-            f'<td class="cmp-c cmp-muted">{a["Spec"]}</td>'
-            f'<td class="cmp-c">{a["Qty"]}</td>'
-            f'<td class="cmp-c cmp-muted">{_money(a["Price"])}</td>'
-            f'<td class="cmp-c cmp-price">{_money(a["Total"])}</td>'
-            "</tr>"
-            for a in order_rows
-        )
-        manual_html += (
-            f'<div class="card"><div class="card-heading" style="margin-bottom:12px;">'
-            f'{sup} <span class="opt-count">{len(agg)} line'
-            f'{"s" if len(agg) != 1 else ""} · {_money(sub_total)}</span></div>'
-            + _table(["COMPONENT", "MODEL", "SPECIFICATION", "QTY", "UNIT PRICE", "TOTAL"], rows)
-            + '</div>')
-    st.markdown(manual_html, unsafe_allow_html=True)
+    # ---- Manual Order List (grouped by company, with URL) --------------
+    st.markdown('<div class="card-heading" style="margin:6px 0 12px 0;">'
+                '📄 Manual Order List <span class="opt-count">grouped by company</span>'
+                '</div>', unsafe_allow_html=True)
+    if manual_by_co:
+        st.markdown(_company_tables_html(manual_by_co), unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="card"><div class="wl-empty">Nothing here yet — no '
+                    'sourced components without an online cart.</div></div>',
+                    unsafe_allow_html=True)
 
     # ---- Save per-company order sheets + email the lecturer ------------
     if orders_by_company:
@@ -1940,14 +1974,8 @@ def render_procurement():
                     + ", ".join(saved))
                 st.rerun()
         with sc2:
-            lines = []
-            for company, rows in orders_by_company.items():
-                lines.append(f"== {company} ==")
-                for a in rows:
-                    lines.append(f'- {a["Component"]} ({a["Model"]}) x{a["Qty"]} '
-                                 f'@ {_money(a["Price"])} = {_money(a["Total"])}')
-                lines.append("")
-            mbody = "Manual order lists (grouped by supplier):\n\n" + "\n".join(lines)
+            mbody = _email_body("Manual order lists (grouped by supplier):",
+                                orders_by_company)
             mmailto = (f'mailto:{quote(lect or "")}?subject='
                        f'{quote("Manual procurement orders")}&body={quote(mbody)}')
             st.markdown(
@@ -1975,33 +2003,42 @@ def render_procurement():
             unsafe_allow_html=True,
         )
 
-    # ---- Export to Excel ----------------------------------------------
-    summary = []
-    for _, comp in wl.iterrows():
-        chosen = _chosen_option(opts, comp["#"])
-        sup = clean(chosen["Supplier"]) if chosen is not None else ""
-        cart = clean(chosen["Shopping Cart Available"]) if chosen is not None else ""
-        sourced = clean(comp["Status"]).lower() == "sourced"
-        route = route_for(sup, cart) if (sourced and chosen is not None) \
-            else "Unresolved"
-        summary.append({
-            "ID": cmp_id(comp["#"]),
-            "Component": clean(comp["Component"]),
-            "Model": clean(comp["Model"]),
-            "Specification": clean(comp["Specifications"]),
-            "Quantity": clean(comp["Quantity"]),
-            "Status": clean(comp["Status"]),
-            "Supplier": sup,
-            "Unit Price": clean(chosen["Price"]) if chosen is not None else "",
-            "Cart Available": cart,
-            "Route": route,
-            "Missing": ", ".join(_missing_fields(comp, chosen)),
-        })
+    # ---- Export to Excel: one sheet per company (cart + manual) --------
+    def _co_df(rows):
+        return pd.DataFrame([{
+            "Component": a["Component"], "Model": a["Model"],
+            "Specification": a["Spec"], "Quantity": a["Qty"],
+            "Unit Price": _money(a["Price"]), "Line Total": _money(a["Total"]),
+            "URL": a["URL"],
+        } for a in rows])
+
+    used = set()
+
+    def _sheet_name(prefix, company):
+        base = f"{prefix} - {company}"[:31]
+        name, k = base, 2
+        while name in used:
+            name = f"{base[:28]}~{k}"
+            k += 1
+        used.add(name)
+        return name
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        pd.DataFrame(summary).to_excel(writer, sheet_name="Procurement Outputs",
-                                       index=False)
-    st.download_button("⬇  Export to Excel", data=buf.getvalue(),
+        wrote = False
+        for company, rows in cart_by_co.items():
+            _co_df(rows).to_excel(writer, index=False,
+                                  sheet_name=_sheet_name("Cart", company))
+            wrote = True
+        for company, rows in manual_by_co.items():
+            _co_df(rows).to_excel(writer, index=False,
+                                  sheet_name=_sheet_name("Manual", company))
+            wrote = True
+        if not wrote:
+            pd.DataFrame(columns=["Component", "Model", "Specification",
+                                  "Quantity", "Unit Price", "Line Total", "URL"]
+                         ).to_excel(writer, index=False, sheet_name="Procurement")
+    st.download_button("⬇  Export to Excel (per company)", data=buf.getvalue(),
                        file_name="procurement_outputs.xlsx",
                        mime="application/vnd.openxmlformats-officedocument."
                             "spreadsheetml.sheet")
